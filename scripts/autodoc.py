@@ -40,6 +40,7 @@ import codecs
 import logging
 import json
 from collections import Counter, defaultdict
+from autodoc_entry_index import AutoDocEntryIndex
 from pathlib import Path
 from mui_class_autodoc import write_mui_docs
 from typing import List, Dict, Tuple, Optional, Any
@@ -159,12 +160,14 @@ class AutoDocOutputAudit:
         self.records = []
         self.recognized_count = 0
         self.math_variant_sources = []
+        self.index = AutoDocEntryIndex()
 
     def reset(self):
         """Clear previously recognized entries, outputs, and variant sources."""
         self.records.clear()
         self.recognized_count = 0
         self.math_variant_sources.clear()
+        self.index.clear()
 
     def recognize(self):
         """Count an AutoDoc source entry selected for parsing."""
@@ -191,6 +194,7 @@ class AutoDocOutputAudit:
                   'entry': doc.docname, 'status': 'PENDING'}
         if hasattr(doc, 'source_paths'):
             record['sources'] = doc.source_paths
+        self.index.add(record, doc, is_hidd=isinstance(doc, HiddAutoDoc))
         self.records.append(record)
 
     @staticmethod
@@ -211,9 +215,7 @@ class AutoDocOutputAudit:
         if any expected page, heading, or source count is missing or mismatched.
         Discovery outside the generator's selected sources remains unverified.
         """
-        expected = defaultdict(Counter)
-        for record in self.records:
-            expected[record['document']][record['entry']] += 1
+        expected = self.index.expected_counts()
         defective = []
         for document, names in sorted(expected.items()):
             path = Path(document)
@@ -932,7 +934,7 @@ class HiddDocList(object):
         self.doclist = {} # key is classname, content is list of documents per class
         self.docfilename = ""
 
-    def read(self, srcdir, name=None):
+    def read(self, srcdir, name=None, filenames=None):
         """Scan directory for autodocs.
 
         Reads all *.c files of the given directory and scans them for autodocs.
@@ -949,7 +951,7 @@ class HiddDocList(object):
         else:
             self.docfilename = os.path.basename(srcdir) + "_hidd" # rightmost part of the path
 
-        cfiles = os.listdir(srcdir)
+        cfiles = os.listdir(srcdir) if filenames is None else filenames
         for infile in cfiles:
             if infile[-2:] == ".c":
                 filename = os.path.join(srcdir, infile)
@@ -1404,7 +1406,7 @@ def create_module_docs() -> None:
     # ATA HIDD AutoDocs are in the root itself, not its subdirectories.
     ata_dir = TOPDIR / "rom" / "devs" / "ata"
     ata_docs = HiddDocList()
-    ata_docs.read(str(ata_dir))
+    ata_docs.read(str(ata_dir), filenames=("ata_busclass.c", "ata_unitclass.c"))
     if ata_docs.doclist:
         ata_docs.docfilename = module_output_registry.claim(ata_docs.docfilename, ata_dir)
         ata_docs.write(str(targetdir), module_titles)
@@ -1424,6 +1426,54 @@ def create_module_docs() -> None:
     mui_target = Path("documentation") / "developers" / "autodocs" / "mui-classes"
     if mui_source.exists():
         write_mui_docs(mui_source, mui_target)
+
+    # Independently declared source groups: no per-path builder edits.
+    from autodoc_source_registry import load_source_registry
+    source_registry = load_source_registry(
+        Path(__file__).resolve().parent / "autodoc-sources.d", TOPDIR)
+    for source_entry in source_registry:
+        source_dir = source_entry.directory
+        if source_entry.output in module_output_registry.owners:
+            raise ValueError("Registered AutoDoc output name already claimed: " +
+                             str(source_entry.origin))
+        if source_entry.kind == "library":
+            docs = LibDocList()
+        else:
+            docs = HiddDocList()
+        docs.read(str(source_dir), name=source_entry.output,
+                  filenames=source_entry.filenames)
+        if not docs.doclist:
+            raise ValueError("Registered source has no recognized AutoDocs: " +
+                             str(source_entry.origin))
+        # Different APIs may legitimately share a source DIRECTORY (for
+        # example ata.device and ATA HIDDs). What must not repeat is a
+        # published source ENTRY. Audit provenance identifies that owner.
+        existing_contracts = {
+            (origin, record["entry"])
+            for record in DOC_AUDIT.records
+            for origin in record.get("sources", [record["source"]])
+        }
+        selected_docs = (docs.doclist if source_entry.kind == "library" else
+                         [entry for group in docs.doclist.values() for entry in group])
+        candidates = {(doc.source_path, doc.docname) for doc in selected_docs}
+        if source_entry.expected_symbols is not None:
+            actual = Counter(doc.docname for doc in selected_docs)
+            expected = Counter(source_entry.expected_symbols)
+            if actual != expected:
+                raise ValueError("Registered AutoDoc symbol inventory drift: " +
+                                 str(source_entry.origin) + " expected=" +
+                                 repr(sorted(expected.elements())) + " actual=" +
+                                 repr(sorted(actual.elements())))
+        duplicates = sorted(existing_contracts.intersection(candidates))
+        if duplicates:
+            raise ValueError("Registered AutoDoc entries already published: " +
+                             str(source_entry.origin) + ": " + repr(duplicates[:8]))
+        docs.docfilename = module_output_registry.claim(source_entry.output, source_dir)
+        if docs.docfilename != source_entry.output:
+            raise ValueError("Unexpected AutoDoc output rename: " + str(source_entry.origin))
+        docs.write(str(targetdir), module_titles)
+        if source_entry.kind == "library":
+            function_index.add_list(docs.docfilename, docs)
 
     # print index file
     index_file = targetdir / "index.en.rst"
