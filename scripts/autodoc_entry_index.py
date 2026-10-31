@@ -13,6 +13,11 @@ from pathlib import PurePosixPath
 
 @dataclass(frozen=True)
 class IndexedAutoDoc:
+    """Bind an audited source entry to its parsed object and output group.
+
+    The record retains source provenance, and parsed is the original
+    parser-owned object. The remaining fields describe grouping.
+    """
     record: dict
     parsed: object
     kind: str
@@ -21,6 +26,7 @@ class IndexedAutoDoc:
 
     @property
     def symbol(self):
+        """Return the documented symbol name of this audited entry."""
         return self.record['entry']
 
 
@@ -28,9 +34,11 @@ class AutoDocEntryIndex:
     """Insertion-ordered entries, hash-indexed by source, symbol and page."""
 
     def __init__(self):
+        """Initialize an empty ordered inventory and its lookup views."""
         self.clear()
 
     def clear(self):
+        """Discard all indexed entries and reset the lookup views."""
         self._entries = []
         self._by_source = defaultdict(list)
         self._by_symbol = defaultdict(list)
@@ -69,15 +77,19 @@ class AutoDocEntryIndex:
 
     @property
     def entries(self):
+        """Return indexed entries in audit insertion order."""
         return tuple(self._entries)
 
     def for_source(self, source):
+        """Return entries from the exact source path."""
         return tuple(self._by_source.get(source, ()))
 
     def for_symbol(self, symbol):
+        """Return entries with a case-insensitive symbol match."""
         return tuple(self._by_symbol.get(symbol.casefold(), ()))
 
     def for_output(self, document):
+        """Return entries for the exact output document path."""
         return tuple(self._by_output.get(document, ()))
 
     def pages(self):

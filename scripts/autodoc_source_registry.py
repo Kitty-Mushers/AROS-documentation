@@ -15,6 +15,12 @@ _KINDS = frozenset(("library", "hidd"))
 
 @dataclass(frozen=True)
 class SourceDeclaration:
+    """Describe one validated C source selection and its output name.
+
+    Origin is the INI declaration; directory and filenames select
+    the source files; kind selects the parser and output names
+    the generated page.
+    """
     origin: Path
     kind: str
     directory: Path
